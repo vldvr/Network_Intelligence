@@ -26,12 +26,12 @@ NetworkUtility is a Python-based GUI application that offers a suite of network 
 
 Use `pip` to install the required Python packages:
 
-bash```
+```
 pip install -r requirements.txt
 ```
 Install nmap
 macOS (using Homebrew)
-```bash
+```
 brew install nmap
 ```
 Windows:
@@ -41,14 +41,14 @@ Download the installer from the official Nmap website and follow the installatio
 Running the Application
 Navigate to the project directory and run:
 
-```bash
+```
 python main.py
 ```
 Note: Some functionalities, like packet sniffing and network scanning, may require administrator/root privileges.
 
 macOS/Linux:
 
-```bash
+```
 sudo python main.py
 ```
 Windows:
