@@ -1,4 +1,4 @@
-# NetworIntelligence
+# NetworkIntelligence
 
 NetworkIntelligence is a Python-based GUI application that offers a suite of network tools, including:
 
