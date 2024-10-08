@@ -1,6 +1,6 @@
-# NetworkUtility
+# NetworIntelligence
 
-NetworkUtility is a Python-based GUI application that offers a suite of network tools, including:
+NetworkIntelligence is a Python-based GUI application that offers a suite of network tools, including:
 
 - **Packet Sniffer**: Capture and filter network packets.
 - **Traceroute**: Trace the path packets take to reach a destination.
