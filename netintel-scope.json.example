@@ -1,0 +1,14 @@
+{
+  "_comment": [
+    "Copy to netintel-scope.json to authorise active scanning outside private",
+    "address space. Only list prefixes you own or have written permission to",
+    "test — the file is a record of that authorisation, not a way around it.",
+    "Private ranges (RFC 1918, loopback, link-local) are always permitted."
+  ],
+  "note": "engagement ACME-2026-03, authorised by ACME IT until 2026-04-01",
+  "authorized_prefixes": [
+    "203.0.113.0/24",
+    "198.51.100.0/24"
+  ],
+  "max_hosts": 1024
+}

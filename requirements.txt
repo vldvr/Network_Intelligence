@@ -1,5 +1,7 @@
-PyQt5
-scapy
-requests
-python-nmap
-geopy
+# Convenience file for `pip install -r requirements.txt`.
+# The authoritative dependency declaration is pyproject.toml, where each of
+# these belongs to an optional extra — the core package needs none of them.
+requests>=2.31   # geolocation lookups
+scapy>=2.5       # traceroute probes and packet capture
+python-nmap>=0.7.1  # optional discovery backend (also needs the nmap binary)
+PyQt5>=5.15      # GUI front end
