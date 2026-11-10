@@ -8,6 +8,7 @@ third-party scanner, no root. Each probe returns an observation object from
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import socket
 import ssl
 import struct
@@ -16,11 +17,12 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 from netintel.core.dnswire import DnsError, DnsRecord, RecordType, build_query, parse_response
 from netintel.core.headers import HttpObservation
 from netintel.core.portscan import OpenPort
+from netintel.core.targets import is_public
 from netintel.core.tlsaudit import TlsObservation, parse_cert_time
 from netintel.errors import NetIntelError, TargetError
 
@@ -202,6 +204,32 @@ def _unverified(host: str, port: int, timeout: float) -> tuple[Any, Any, str | N
 # --------------------------------------------------------------------- HTTP
 
 
+def _is_local_host(host: str) -> bool:
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return any(not is_public(ipaddress.ip_address(info[4][0])) for info in infos)
+
+
+def _check_redirect(current: str, target: str) -> None:
+    """Refuse redirects that turn a check of a public site into something else.
+
+    A server under audit chooses where we go next; it must not be able to
+    point the tool at another scheme, downgrade it to plain HTTP, or bounce it
+    into the auditor's own network (router admin pages, metadata services).
+    """
+    src, dst = urlsplit(current), urlsplit(target)
+    if dst.scheme not in ("http", "https"):
+        raise TargetError(f"refusing redirect to non-HTTP URL {target!r}")
+    if src.scheme == "https" and dst.scheme == "http":
+        raise TargetError(f"refusing redirect from HTTPS down to HTTP: {target!r}")
+    if not _is_local_host(src.hostname or "") and _is_local_host(dst.hostname or ""):
+        raise TargetError(
+            f"refusing redirect from a public host into local address space: {target!r}"
+        )
+
+
 def fetch_headers(url: str, *, timeout: float = 8.0, max_redirects: int = 5) -> HttpObservation:
     if "://" not in url:
         url = "https://" + url
@@ -226,7 +254,9 @@ def fetch_headers(url: str, *, timeout: float = 8.0, max_redirects: int = 5) -> 
             conn.close()
         location = resp.getheader("Location")
         if resp.status in (301, 302, 303, 307, 308) and location:
-            url = location if "://" in location else f"{parts.scheme}://{parts.netloc}{location}"
+            next_url = urljoin(url, location)
+            _check_redirect(url, next_url)
+            url = next_url
             continue
         return HttpObservation.from_mapping(url, resp.status, headers)
     raise TargetError(f"too many redirects from {url}")

@@ -171,7 +171,9 @@ def _cmd_tls(args: argparse.Namespace, out: TextIO, token: CancellationToken) ->
     if args.json:
         _dump({"observation": obs, "findings": findings}, out)
     else:
-        print(f"{args.host}:{args.port}  SAN: {', '.join(obs.san[:6])}", file=out)
+        from netintel.core.findings import clean
+
+        print(f"{args.host}:{args.port}  SAN: {clean(', '.join(obs.san[:6]))}", file=out)
         _print_findings(findings, out)
     return EXIT_OK
 
@@ -191,6 +193,7 @@ def _cmd_headers(args: argparse.Namespace, out: TextIO, token: CancellationToken
 
 def _cmd_dns(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
     from netintel.adapters.netprobes import WireDnsClient
+    from netintel.core.findings import clean
 
     client = WireDnsClient(args.server)
     records = [r for t in args.types for r in client.query(args.name, t.upper())]
@@ -199,7 +202,7 @@ def _cmd_dns(args: argparse.Namespace, out: TextIO, token: CancellationToken) ->
     else:
         print(f";; server {client.server}", file=out)
         for r in records:
-            print(f"{r.name:<30} {r.ttl:>6}  {r.type_name:<5} {r.value}", file=out)
+            print(f"{clean(r.name):<30} {r.ttl:>6}  {r.type_name:<5} {clean(r.value)}", file=out)
     return EXIT_OK
 
 

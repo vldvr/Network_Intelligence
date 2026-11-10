@@ -279,3 +279,24 @@ def test_audit_merges_sections_and_survives_a_failing_probe():
     assert report.header_grade == "A"
     assert report.errors == ("tls: handshake failed",)
     assert "single nameserver" in titles(report.findings)
+
+
+def test_spf_walk_is_bounded_on_a_hostile_include_tree():
+    calls = []
+
+    def lookup(name):
+        calls.append(name)
+        # every domain includes 50 fresh domains: unbounded without a budget
+        return ["v=spf1 " + " ".join(f"include:{name}.{i}" for i in range(50)) + " -all"]
+
+    total = count_spf_lookups("example.com", lookup)
+    assert total > 10
+    assert len(calls) < 10
+
+
+def test_control_characters_in_remote_text_are_escaped():
+    from netintel.core.findings import Finding, format_findings
+
+    text = format_findings([Finding("ports", Severity.INFO, "banner", "evil\x1b[2Jtext")])
+    assert "\x1b" not in text
+    assert "\\x1b[2J" in text

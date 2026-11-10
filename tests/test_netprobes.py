@@ -190,3 +190,23 @@ def test_scan_ports_finds_listeners_and_grabs_banners():
 
 def test_scan_ports_stops_when_cancelled():
     assert scan_ports(["127.0.0.1"], [1, 2, 3], timeout=0.2, should_continue=lambda: False) == []
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        ("https://example.com/", "file:///etc/passwd"),
+        ("https://example.com/", "http://example.com/"),
+        ("https://example.com/", "https://127.0.0.1/admin"),
+    ],
+)
+def test_dangerous_redirects_are_refused(current, target, monkeypatch):
+    from netintel.adapters import netprobes
+
+    monkeypatch.setattr(netprobes, "_is_local_host", lambda host: host == "127.0.0.1")
+    with pytest.raises(TargetError):
+        netprobes._check_redirect(current, target)
+
+
+def test_local_to_local_redirects_are_allowed(http_server):
+    assert fetch_headers(f"{http_server}/old").status == 200

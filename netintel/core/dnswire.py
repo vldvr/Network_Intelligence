@@ -196,7 +196,11 @@ def parse_response(data: bytes, *, expected_id: int | None = None) -> DnsRespons
         pos += 10
         if pos + rdlength > len(data):
             raise DnsError("record data runs past the end of the packet")
-        answers.append(DnsRecord(name, rtype, ttl, _decode_rdata(data, rtype, pos, rdlength)))
+        try:
+            value = _decode_rdata(data, rtype, pos, rdlength)
+        except (struct.error, IndexError, ValueError) as exc:
+            raise DnsError(f"malformed {rtype} record data") from exc
+        answers.append(DnsRecord(name, rtype, ttl, value))
         pos += rdlength
 
     return DnsResponse(

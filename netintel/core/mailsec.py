@@ -60,34 +60,49 @@ def _spf_records(txt: Sequence[str]) -> list[str]:
     return [t for t in txt if t.lower().startswith("v=spf1")]
 
 
-def count_spf_lookups(domain: str, lookup: TxtLookup, *, _seen: set[str] | None = None) -> int:
+_SPF_MAX_DEPTH = 10
+_SPF_BUDGET = SPF_LOOKUP_LIMIT * 3
+
+
+def count_spf_lookups(domain: str, lookup: TxtLookup) -> int:
     """Count DNS-querying terms, following include/redirect recursively.
 
     Past :data:`SPF_LOOKUP_LIMIT` a receiver must return ``permerror`` —
     the record stops protecting anything, and nobody notices because mail
-    still flows.
+    still flows. A hostile zone can publish a wide or deep include tree, so
+    one budget is shared across the whole walk and checked before every
+    query: counting stops a little past the limit instead of following it all.
     """
-    seen = _seen if _seen is not None else set()
-    if domain in seen:
-        return 0
+    state = {"total": 0}
+    _walk_spf(domain, lookup, set(), state, depth=0)
+    return state["total"]
+
+
+def _walk_spf(
+    domain: str, lookup: TxtLookup, seen: set[str], state: dict[str, int], *, depth: int
+) -> None:
+    if domain in seen or depth > _SPF_MAX_DEPTH or state["total"] > _SPF_BUDGET:
+        return
     seen.add(domain)
     records = _spf_records(lookup(domain))
     if not records:
-        return 0
+        return
     spf = parse_spf(records[0])
-    total = 0
+    targets = []
     for mechanism in spf.mechanisms:
         bare = mechanism.lstrip("+-~?")
         name = bare.split(":", 1)[0].split("/", 1)[0]
         if name in _LOOKUP_MECHANISMS:
-            total += 1
+            state["total"] += 1
             if name == "include" and ":" in bare:
-                total += count_spf_lookups(bare.split(":", 1)[1], lookup, _seen=seen)
-        if total > SPF_LOOKUP_LIMIT * 3:
-            break
+                targets.append(bare.split(":", 1)[1])
     if spf.redirect:
-        total += 1 + count_spf_lookups(spf.redirect, lookup, _seen=seen)
-    return total
+        state["total"] += 1
+        targets.append(spf.redirect)
+    for target in targets:
+        if state["total"] > _SPF_BUDGET:
+            return
+        _walk_spf(target, lookup, seen, state, depth=depth + 1)
 
 
 def check_spf(domain: str, lookup: TxtLookup) -> list[Finding]:

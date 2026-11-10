@@ -93,3 +93,8 @@ def test_truncated_packets_raise_instead_of_index_errors():
     for cut in (5, 20, len(full) - 2):
         with pytest.raises(DnsError):
             parse_response(full[:cut])
+
+
+def test_short_mx_rdata_is_a_dns_error_not_a_struct_error():
+    with pytest.raises(DnsError, match="malformed"):
+        parse_response(_response(1, [(RecordType.MX, b"\x00")]))

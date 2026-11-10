@@ -58,6 +58,18 @@ _MARKS = {
 }
 
 
+def clean(text: str) -> str:
+    """Escape control characters in remotely sourced text.
+
+    Banners, DNS TXT records and HTTP headers are attacker-controlled; printed
+    raw, an ESC sequence in them can rewrite the user's terminal.
+    """
+    return "".join(
+        ch if ch.isprintable() or ch == " " else ch.encode("unicode_escape").decode("ascii")
+        for ch in text
+    )
+
+
 def worst(findings: Iterable[Finding]) -> Severity:
     return max((f.severity for f in findings), default=Severity.INFO)
 
@@ -65,8 +77,8 @@ def worst(findings: Iterable[Finding]) -> Severity:
 def format_findings(findings: Iterable[Finding], *, indent: str = "  ") -> str:
     lines = []
     for finding in findings:
-        line = f"{indent}{_MARKS[finding.severity]} {finding.title}"
+        line = f"{indent}{_MARKS[finding.severity]} {clean(finding.title)}"
         if finding.detail:
-            line += f" — {finding.detail}"
+            line += f" — {clean(finding.detail)}"
         lines.append(line)
     return "\n".join(lines)

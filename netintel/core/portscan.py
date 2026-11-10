@@ -14,7 +14,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 
 from netintel.cancellation import NEVER_CANCELLED, CancellationToken
-from netintel.core.findings import Finding, Severity
+from netintel.core.findings import Finding, Severity, clean
 from netintel.core.scope import ScopePolicy
 from netintel.core.targets import parse_targets
 from netintel.errors import TargetError
@@ -236,7 +236,7 @@ def format_port_report(report: PortScanReport) -> str:
     for p in report.open_ports:
         line = f"  {p.host:<16} {p.port:>5}/tcp  {p.service:<14}"
         if p.product:
-            line += f" {p.product}"
+            line += f" {clean(p.product)}"
         lines.append(line.rstrip())
     if report.cancelled:
         lines.append("cancelled — results are partial")
