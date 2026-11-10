@@ -9,7 +9,6 @@ from netintel.core.geoip import (
     CachingGeoIPProvider,
     IpApiProvider,
     NullGeoIPProvider,
-    haversine_km,
 )
 from netintel.errors import GeoIPError
 from netintel.ratelimit import Quota, TokenBucket
@@ -180,20 +179,3 @@ def test_null_provider_locates_nothing():
     provider = NullGeoIPProvider()
     assert provider.lookup("8.8.8.8") is None
     assert provider.lookup_many(["8.8.8.8"]) == {"8.8.8.8": None}
-
-
-# ------------------------------------------------------------------ distance
-
-
-def test_haversine_matches_a_known_distance():
-    london = (51.5074, -0.1278)
-    paris = (48.8566, 2.3522)
-    assert haversine_km(london, paris) == pytest.approx(343.0, abs=2.0)
-
-
-def test_haversine_is_zero_for_the_same_point():
-    assert haversine_km((10.0, 20.0), (10.0, 20.0)) == pytest.approx(0.0)
-
-
-def test_haversine_handles_antipodes():
-    assert haversine_km((0.0, 0.0), (0.0, 180.0)) == pytest.approx(20015.0, abs=5.0)

@@ -23,7 +23,6 @@ from netintel.core.discovery import (
     DiscoveryConfig,
     DiscoveryReport,
     DiscoveryService,
-    GeoFilter,
 )
 from netintel.core.scope import ScopePolicy
 from netintel.core.targets import parse_targets
@@ -86,23 +85,9 @@ class DiscoveryPanel(OperationPanel):
         options.addWidget(self.timeout_input)
 
         self.geo_checkbox = QCheckBox("Locate hosts")
-        self.geo_checkbox.toggled.connect(self._toggle_geo_inputs)
         options.addWidget(self.geo_checkbox)
         options.addStretch(1)
         form.addRow("Options", _wrap(options))
-
-        geo = QHBoxLayout()
-        self.lat_input = QLineEdit()
-        self.lat_input.setPlaceholderText("latitude, e.g. 51.5074")
-        self.lon_input = QLineEdit()
-        self.lon_input.setPlaceholderText("longitude, e.g. -0.1278")
-        self.radius_input = QLineEdit()
-        self.radius_input.setPlaceholderText("radius in km")
-        geo.addWidget(self.lat_input)
-        geo.addWidget(self.lon_input)
-        geo.addWidget(self.radius_input)
-        self._geo_row = _wrap(geo)
-        form.addRow("Near", self._geo_row)
 
         layout.addLayout(form)
 
@@ -114,11 +99,6 @@ class DiscoveryPanel(OperationPanel):
         self.preview_label = QLabel("")
         self.preview_label.setObjectName("previewLabel")
         layout.addWidget(self.preview_label)
-
-        self._toggle_geo_inputs(False)
-
-    def _toggle_geo_inputs(self, enabled: bool) -> None:
-        self._geo_row.setEnabled(enabled)
 
     def _preview_targets(self, text: str) -> None:
         """Validate as the user types.
@@ -144,19 +124,10 @@ class DiscoveryPanel(OperationPanel):
         self.preview_label.setText(message)
 
     def create_worker(self) -> Worker:
-        geo_filter = None
-        if self.geo_checkbox.isChecked() and self.lat_input.text().strip():
-            geo_filter = GeoFilter(
-                _as_float(self.lat_input.text(), "latitude"),
-                _as_float(self.lon_input.text(), "longitude"),
-                _as_float(self.radius_input.text(), "radius"),
-            ).validated()
-
         config = DiscoveryConfig(
             timeout_s=self.timeout_input.value(),
             max_hosts=self._policy.max_hosts,
             geolocate=self.geo_checkbox.isChecked(),
-            geo_filter=geo_filter,
         ).validated()
 
         service = DiscoveryService(
@@ -185,23 +156,12 @@ class DiscoveryPanel(OperationPanel):
                 parts.append(host.hostname)
             if host.location is not None:
                 parts.append(host.location.describe())
-            if host.distance_km is not None:
-                parts.append(f"{host.distance_km:.0f} km")
             self.append("  ".join(parts))
 
         summary = f"{len(result.hosts)} of {result.requested} responded"
-        if result.filtered_out:
-            summary += f", {result.filtered_out} outside the radius"
         if result.cancelled:
             summary += " (partial — cancelled)"
         self.set_status(summary)
-
-
-def _as_float(text: str, label: str) -> float:
-    try:
-        return float(text.strip())
-    except ValueError as exc:
-        raise TargetError(f"{label} must be a number") from exc
 
 
 def _wrap(inner: QHBoxLayout) -> QWidget:

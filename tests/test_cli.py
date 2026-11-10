@@ -105,23 +105,6 @@ def test_geo_offline_reports_no_location():
     assert "no location available" in output
 
 
-def test_geo_with_near_reports_a_distance(monkeypatch):
-    http = FakeHttpClient([[ip_api_entry("8.8.8.8", 48.8566, 2.3522)]])
-    provider = CachingGeoIPProvider(
-        IpApiProvider(http, bucket=TokenBucket(Quota(100, 60.0), clock=FakeClock()))
-    )
-    monkeypatch.setattr("netintel.cli.main.build_geoip_provider", lambda **_: provider)
-
-    code, output = run(["geo", "8.8.8.8", "--near", "51.5074,-0.1278"])
-    assert code == EXIT_OK
-    assert "344 km away" in output  # London to Paris, rounded for display
-
-
-def test_malformed_coordinate_is_a_handled_error():
-    code, _ = run(["geo", "8.8.8.8", "--near", "north"])
-    assert code == EXIT_ERROR
-
-
 def test_discover_uses_the_selected_backend(monkeypatch):
     backend = FakeDiscoveryBackend(up=["192.168.1.4"])
     monkeypatch.setattr("netintel.cli.main.build_discovery_backend", lambda **_: backend)
@@ -168,14 +151,6 @@ def test_discover_accepts_an_explicit_authorised_scope(monkeypatch):
     assert "203.0.113.5" in output
 
 
-def test_near_without_radius_is_rejected(monkeypatch):
-    monkeypatch.setattr(
-        "netintel.cli.main.build_discovery_backend", lambda **_: FakeDiscoveryBackend(up=[])
-    )
-    code, _ = run(["discover", "192.168.1.0/29", "--near", "51.5,0.1"])
-    assert code == EXIT_ERROR
-
-
 def test_capture_writes_lines(monkeypatch):
     source = FakePacketSource([make_packet(), make_packet(length=120)])
     monkeypatch.setattr("netintel.cli.main.build_packet_source", lambda: source)
@@ -207,3 +182,136 @@ def test_capture_count_limit(monkeypatch):
     payload = json.loads(output)
     assert code == EXIT_OK
     assert len(payload["packets"]) == 3
+
+
+# ------------------------------------------------- audit-family commands
+
+
+@pytest.fixture
+def fake_probes(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from netintel.adapters import netprobes
+    from netintel.core.dnswire import DnsRecord
+    from netintel.core.headers import HttpObservation
+    from netintel.core.tlsaudit import TlsObservation
+
+    zone = {
+        "example.com": ["v=spf1 ~all"],
+        "_dmarc.example.com": ["v=DMARC1; p=none"],
+    }
+
+    class FakeDnsClient:
+        server = "192.0.2.53"
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def query(self, name, rtype):
+            if str(rtype).upper() == "A":
+                return [DnsRecord(name, 1, 60, "93.184.216.34")]
+            return []
+
+        def txt(self, name):
+            return zone.get(name, [])
+
+    now = datetime.now(UTC)
+    obs = TlsObservation(
+        "example.com",
+        443,
+        "TLSv1.3",
+        "TLS_AES_128_GCM_SHA256",
+        128,
+        "example.com",
+        "Example CA",
+        ("example.com",),
+        now - timedelta(days=1),
+        now + timedelta(days=90),
+        True,
+    )
+    monkeypatch.setattr(netprobes, "WireDnsClient", FakeDnsClient)
+    monkeypatch.setattr(netprobes, "probe_tls", lambda host, port=443: obs)
+    monkeypatch.setattr(
+        netprobes,
+        "fetch_headers",
+        lambda url: HttpObservation.from_mapping(
+            "https://example.com/", 200, {"Server": "nginx/1.25"}
+        ),
+    )
+
+
+def test_audit_prints_every_section(fake_probes):
+    code, output = run(["audit", "example.com"])
+    assert code == EXIT_OK
+    for section in ("== dns", "== mail", "== tls", "== headers"):
+        assert section in output
+    assert "DMARC policy is none" in output
+    assert "worst finding: medium" in output
+
+
+def test_audit_json_is_parseable(fake_probes):
+    _, output = run(["--json", "audit", "example.com"])
+    payload = json.loads(output)
+    assert payload["domain"] == "example.com"
+    assert payload["worst"] == "medium"
+    assert {f["check"] for f in payload["findings"]} == {"dns", "spf", "dmarc", "tls", "headers"}
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["dns", "example.com", "A"], "93.184.216.34"),
+        (["mail", "example.com"], "SPF ends in ~all"),
+        (["tls", "example.com"], "certificate chain verifies"),
+        (["headers", "example.com"], "grade:"),
+    ],
+)
+def test_single_checks(fake_probes, argv, expected):
+    code, output = run(argv)
+    assert code == EXIT_OK
+    assert expected in output
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["dns", "example.com"],
+        ["mail", "example.com"],
+        ["tls", "example.com"],
+        ["headers", "example.com"],
+    ],
+)
+def test_single_checks_emit_json(fake_probes, argv):
+    _, output = run(["--json", *argv])
+    json.loads(output)
+
+
+def test_ports_scans_a_local_listener():
+    import socket
+    import threading
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+    port = listener.getsockname()[1]
+
+    def serve():
+        conn, _ = listener.accept()
+        conn.close()
+
+    threading.Thread(target=serve, daemon=True).start()
+    code, output = run(["ports", "127.0.0.1", "-p", str(port)])
+    listener.close()
+    assert code == EXIT_OK
+    assert f"{port}/tcp" in output
+
+
+def test_ports_refuses_public_targets(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    code, _ = run(["ports", "8.8.8.8", "-p", "53"])
+    assert code == EXIT_ERROR
+
+
+def test_bad_port_spec_is_a_handled_error():
+    code, _ = run(["ports", "127.0.0.1", "-p", "ssh"])
+    assert code == EXIT_ERROR

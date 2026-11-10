@@ -5,11 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "netintel"
 version = "1.0.0"
-description = "Network diagnostics toolkit: traceroute, geolocation, host discovery and packet capture, with a CLI and a Qt front end."
+description = "Network recon and external audit: DNS, SPF/DMARC, TLS, HTTP headers, port scan, traceroute and capture, with a CLI and a Qt front end."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-keywords = ["network", "traceroute", "geoip", "packet-capture", "diagnostics"]
+keywords = ["network", "security", "audit", "port-scanner", "tls", "dns", "dmarc", "traceroute", "packet-capture"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -47,8 +47,8 @@ netintel = "netintel.cli.main:main"
 netintel-gui = "netintel.ui.app:run"
 
 [project.urls]
-Homepage = "https://github.com/vldvr/network_intelligence"
-Issues = "https://github.com/vldvr/network_intelligence/issues"
+Homepage = "https://github.com/vldvr/Network_Intelligence"
+Issues = "https://github.com/vldvr/Network_Intelligence/issues"
 
 [tool.setuptools.packages.find]
 include = ["netintel*"]
@@ -56,6 +56,7 @@ include = ["netintel*"]
 [tool.pytest.ini_options]
 minversion = "8.0"
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-q --strict-markers --strict-config"
 filterwarnings = ["error"]
 

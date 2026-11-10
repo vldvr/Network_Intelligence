@@ -12,14 +12,18 @@ from netintel import __version__
 from netintel.core.scope import ScopePolicy
 from netintel.privileges import check_raw_socket_privileges
 from netintel.ui.panels import (
+    AuditPanel,
     CapturePanel,
     DiscoveryPanel,
     GeolocationPanel,
+    PortsPanel,
     TraceroutePanel,
 )
 from netintel.ui.panels.base import OperationPanel
 
 PANELS: tuple[type[OperationPanel], ...] = (
+    AuditPanel,
+    PortsPanel,
     TraceroutePanel,
     GeolocationPanel,
     DiscoveryPanel,
@@ -83,7 +87,8 @@ class MainWindow(QMainWindow):
             self,
             "NetworkIntelligence",
             f"<b>NetworkIntelligence {__version__}</b>"
-            "<p>Traceroute, geolocation, host discovery and packet capture.</p>"
+            "<p>Domain audit, port scan, traceroute, geolocation, host discovery "
+            "and packet capture.</p>"
             "<p>The same engine backs the <code>netintel</code> command-line "
             "interface; this window is a front end over it.</p>",
         )

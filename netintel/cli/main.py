@@ -31,15 +31,13 @@ from netintel.core.capture import CaptureSession, compile_bpf, format_packet
 from netintel.core.discovery import (
     DiscoveryConfig,
     DiscoveryService,
-    GeoFilter,
     format_report,
 )
-from netintel.core.geoip import haversine_km
 from netintel.core.scope import ScopePolicy
 from netintel.core.targets import is_hostname, parse_address
 from netintel.core.traceroute import TraceConfig, Tracer, format_trace
 from netintel.errors import NetIntelError
-from netintel.models import CaptureFilter, GeoLocation, Protocol, to_json
+from netintel.models import CaptureFilter, Protocol, to_json
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -50,7 +48,10 @@ EXIT_INTERRUPTED = 130
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="netintel",
-        description="Network diagnostics: traceroute, geolocation, host discovery, capture.",
+        description=(
+            "Network diagnostics and external audit: traceroute, discovery, ports, "
+            "TLS, headers, DNS, mail, capture."
+        ),
         epilog=(
             "Active scanning is restricted to private address space unless an "
             "authorised scope is supplied. See `netintel scope --help`."
@@ -74,7 +75,174 @@ def build_parser() -> argparse.ArgumentParser:
     _add_discover_parser(subparsers)
     _add_capture_parser(subparsers)
     _add_scope_parser(subparsers)
+    _add_audit_parsers(subparsers)
     return parser
+
+
+def _add_audit_parsers(subparsers: Any) -> None:
+    ports = subparsers.add_parser(
+        "ports", help="TCP connect port scan with banner grabbing (no root)"
+    )
+    ports.add_argument("targets", help="host, IP, range or CIDR")
+    ports.add_argument("-p", "--ports", default="top", help="e.g. 22,80,8000-8100, 'top' or 'all'")
+    ports.add_argument("--timeout", type=float, default=1.0)
+    ports.add_argument("--authorized-scope", metavar="PREFIX", action="append", default=[])
+    ports.add_argument("--scope-file")
+    ports.set_defaults(handler=_cmd_ports)
+
+    tls = subparsers.add_parser("tls", help="inspect a TLS endpoint: certificate, protocol, cipher")
+    tls.add_argument("host")
+    tls.add_argument("--port", type=int, default=443)
+    tls.set_defaults(handler=_cmd_tls)
+
+    headers = subparsers.add_parser("headers", help="grade a site's HTTP security headers")
+    headers.add_argument("url")
+    headers.set_defaults(handler=_cmd_headers)
+
+    dns = subparsers.add_parser("dns", help="query DNS records with the built-in resolver")
+    dns.add_argument("name")
+    dns.add_argument("types", nargs="*", default=["A", "AAAA", "NS", "MX", "TXT"])
+    dns.add_argument("--server", help="DNS server IP (default: system resolver)")
+    dns.set_defaults(handler=_cmd_dns)
+
+    mail = subparsers.add_parser("mail", help="check SPF and DMARC: can this domain be spoofed?")
+    mail.add_argument("domain")
+    mail.add_argument("--server")
+    mail.set_defaults(handler=_cmd_mail)
+
+    audit = subparsers.add_parser(
+        "audit", help="passive audit of a domain: DNS, mail, TLS, headers"
+    )
+    audit.add_argument("domain")
+    audit.add_argument("--server")
+    audit.set_defaults(handler=_cmd_audit)
+
+
+def _print_findings(findings: Any, out: TextIO) -> None:
+    from netintel.core.findings import format_findings
+
+    print(format_findings(findings), file=out)
+
+
+def _cmd_ports(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
+    from netintel.adapters.netprobes import scan_ports
+    from netintel.core.portscan import format_port_report, parse_ports, run_port_scan
+
+    if args.authorized_scope:
+        policy = ScopePolicy.from_prefixes(
+            args.authorized_scope, note="scope supplied on the command line"
+        )
+    else:
+        policy = ScopePolicy.load(args.scope_file)
+    targets = args.targets
+    if is_hostname(targets):
+        targets = build_resolver().resolve(targets)
+
+    on_open = None
+    if not args.json:
+
+        def on_open(port: Any) -> None:
+            print(f"  open: {port.host}:{port.port}", file=out, flush=True)
+
+    report = run_port_scan(
+        targets,
+        parse_ports(args.ports),
+        scan_ports,
+        policy=policy,
+        timeout=args.timeout,
+        token=token,
+        on_open=on_open,
+    )
+    if args.json:
+        _dump(report, out)
+    else:
+        print(format_port_report(report), file=out)
+        if report.findings:
+            _print_findings(report.findings, out)
+    return EXIT_OK
+
+
+def _cmd_tls(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
+    from netintel.adapters.netprobes import probe_tls
+    from netintel.core.tlsaudit import assess
+
+    obs = probe_tls(args.host, args.port)
+    findings = assess(obs)
+    if args.json:
+        _dump({"observation": obs, "findings": findings}, out)
+    else:
+        print(f"{args.host}:{args.port}  SAN: {', '.join(obs.san[:6])}", file=out)
+        _print_findings(findings, out)
+    return EXIT_OK
+
+
+def _cmd_headers(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
+    from netintel.adapters.netprobes import fetch_headers
+    from netintel.core.headers import audit_headers, grade
+
+    findings = audit_headers(fetch_headers(args.url))
+    if args.json:
+        _dump({"grade": grade(findings), "findings": findings}, out)
+    else:
+        print(f"grade: {grade(findings)}", file=out)
+        _print_findings(findings, out)
+    return EXIT_OK
+
+
+def _cmd_dns(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
+    from netintel.adapters.netprobes import WireDnsClient
+
+    client = WireDnsClient(args.server)
+    records = [r for t in args.types for r in client.query(args.name, t.upper())]
+    if args.json:
+        _dump(records, out)
+    else:
+        print(f";; server {client.server}", file=out)
+        for r in records:
+            print(f"{r.name:<30} {r.ttl:>6}  {r.type_name:<5} {r.value}", file=out)
+    return EXIT_OK
+
+
+def _cmd_mail(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
+    from netintel.adapters.netprobes import WireDnsClient
+    from netintel.core.mailsec import check_mail
+
+    findings = check_mail(args.domain, WireDnsClient(args.server).txt)
+    if args.json:
+        _dump(findings, out)
+    else:
+        _print_findings(findings, out)
+    return EXIT_OK
+
+
+def _cmd_audit(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
+    from netintel.adapters.netprobes import WireDnsClient, fetch_headers, probe_tls
+    from netintel.core.audit import AuditProbes, run_audit
+
+    client = WireDnsClient(args.server)
+    probes = AuditProbes(client.query, client.txt, probe_tls, fetch_headers)
+
+    on_section = None
+    if not args.json:
+
+        def on_section(name: str, findings: Any) -> None:
+            print(f"\n== {name}", file=out)
+            _print_findings(findings, out)
+
+        print(f"audit of {args.domain}", file=out)
+    report = run_audit(args.domain, probes, on_section=on_section)
+    if args.json:
+        _dump(report, out)
+    else:
+        if report.errors:
+            print("\n== errors", file=out)
+            for e in report.errors:
+                print(f"  {e}", file=out)
+        summary = f"\nworst finding: {report.worst.label}"
+        if report.header_grade:
+            summary += f", header grade {report.header_grade}"
+        print(summary, file=out)
+    return EXIT_OK
 
 
 def _add_trace_parser(subparsers: Any) -> None:
@@ -94,11 +262,6 @@ def _add_trace_parser(subparsers: Any) -> None:
 def _add_geo_parser(subparsers: Any) -> None:
     geo = subparsers.add_parser("geo", help="locate one or more IP addresses or hosts")
     geo.add_argument("targets", nargs="+", help="hostnames or IP addresses")
-    geo.add_argument(
-        "--near",
-        metavar="LAT,LON",
-        help="also report the distance from this point",
-    )
     geo.set_defaults(handler=_cmd_geo)
 
 
@@ -115,10 +278,6 @@ def _add_discover_parser(subparsers: Any) -> None:
         help="discovery backend (default: auto)",
     )
     discover.add_argument("--geo", action="store_true", help="geolocate the hosts that respond")
-    discover.add_argument("--near", metavar="LAT,LON", help="keep only hosts near this point")
-    discover.add_argument(
-        "--radius", type=float, metavar="KM", help="radius for --near, in kilometres"
-    )
     discover.add_argument(
         "--authorized-scope",
         metavar="PREFIX",
@@ -206,7 +365,6 @@ def _cmd_trace(args: argparse.Namespace, out: TextIO, token: CancellationToken) 
 def _cmd_geo(args: argparse.Namespace, out: TextIO, token: CancellationToken) -> int:
     resolver = build_resolver()
     provider = build_geoip_provider(offline=args.offline)
-    origin = _parse_point(args.near) if args.near else None
 
     addresses = [
         resolver.resolve(target) if is_hostname(target) else str(parse_address(target))
@@ -220,7 +378,6 @@ def _cmd_geo(args: argparse.Namespace, out: TextIO, token: CancellationToken) ->
                 "target": target,
                 "ip": ip,
                 "location": to_json(located.get(ip)),
-                "distance_km": _distance_km(origin, located.get(ip)),
             }
             for target, ip in zip(args.targets, addresses, strict=True)
         ]
@@ -238,8 +395,6 @@ def _cmd_geo(args: argparse.Namespace, out: TextIO, token: CancellationToken) ->
         )
         if location.autonomous_system:
             line += f" — {location.autonomous_system}"
-        if origin:
-            line += f" — {haversine_km(origin, location.coordinates):.0f} km away"
         print(line, file=out)
         if location.is_hosting or location.is_proxy:
             print(
@@ -258,13 +413,6 @@ def _cmd_discover(args: argparse.Namespace, out: TextIO, token: CancellationToke
     else:
         policy = ScopePolicy.load(args.scope_file)
 
-    geo_filter = None
-    if args.near or args.radius is not None:
-        if not (args.near and args.radius is not None):
-            raise NetIntelError("--near and --radius must be used together")
-        latitude, longitude = _parse_point(args.near)
-        geo_filter = GeoFilter(latitude, longitude, args.radius).validated()
-
     service = DiscoveryService(
         build_discovery_backend(prefer=args.backend),
         policy=policy,
@@ -274,7 +422,6 @@ def _cmd_discover(args: argparse.Namespace, out: TextIO, token: CancellationToke
         timeout_s=args.timeout,
         max_hosts=args.max_hosts,
         geolocate=args.geo,
-        geo_filter=geo_filter,
     )
 
     on_host = None
@@ -360,23 +507,6 @@ def _cmd_scope(args: argparse.Namespace, out: TextIO, token: CancellationToken) 
     else:
         print(policy.describe(), file=out)
     return EXIT_OK
-
-
-def _distance_km(origin: tuple[float, float] | None, location: GeoLocation | None) -> float | None:
-    """Distance from ``origin``, or ``None`` when either end is unknown."""
-    if origin is None or location is None:
-        return None
-    return haversine_km(origin, location.coordinates)
-
-
-def _parse_point(text: str) -> tuple[float, float]:
-    parts = text.split(",")
-    if len(parts) != 2:
-        raise NetIntelError("a coordinate must look like 51.5074,-0.1278")
-    try:
-        return (float(parts[0]), float(parts[1]))
-    except ValueError as exc:
-        raise NetIntelError(f"{text!r} is not a valid coordinate") from exc
 
 
 def _dump(payload: Any, out: TextIO) -> None:

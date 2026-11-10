@@ -1,4 +1,4 @@
-"""Discovery service: policy, enrichment and geographic filtering."""
+"""Discovery service: policy, and enrichment."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from netintel.cancellation import CancellationToken
 from netintel.core.discovery import (
     DiscoveryConfig,
     DiscoveryService,
-    GeoFilter,
     format_report,
 )
 from netintel.core.geoip import CachingGeoIPProvider, IpApiProvider
@@ -92,69 +91,10 @@ def test_geolocation_enriches_the_results():
     assert report.hosts[0].location.city == "London"
 
 
-def test_distance_filter_keeps_only_nearby_hosts():
-    provider, _ = geoip([LONDON_ENTRY, PARIS_ENTRY])
-    service = DiscoveryService(
-        FakeDiscoveryBackend(up=["198.51.100.1", "198.51.100.2"]),
-        policy=ScopePolicy.from_prefixes(["198.51.100.0/24"]),
-        geoip=provider,
-    )
-    report = service.discover(
-        "198.51.100.1-2",
-        config=DiscoveryConfig(geo_filter=GeoFilter(*LONDON, max_distance_km=100)),
-    )
-
-    assert [host.ip for host in report.hosts] == ["198.51.100.1"]
-    assert report.filtered_out == 1
-    assert report.hosts[0].distance_km == pytest.approx(0.0, abs=1.0)
-
-
-def test_unlocatable_hosts_are_excluded_rather_than_assumed_near():
-    provider, _ = geoip([LONDON_ENTRY])
-    service = DiscoveryService(
-        FakeDiscoveryBackend(up=["198.51.100.1", "198.51.100.9"]),
-        policy=ScopePolicy.from_prefixes(["198.51.100.0/24"]),
-        geoip=provider,
-    )
-    report = service.discover(
-        "198.51.100.1-9",
-        config=DiscoveryConfig(geo_filter=GeoFilter(*LONDON, max_distance_km=5000)),
-    )
-    assert [host.ip for host in report.hosts] == ["198.51.100.1"]
-    assert report.filtered_out == 1
-
-
-def test_results_are_sorted_by_distance():
-    provider, _ = geoip([PARIS_ENTRY, LONDON_ENTRY])
-    service = DiscoveryService(
-        FakeDiscoveryBackend(up=["198.51.100.2", "198.51.100.1"]),
-        policy=ScopePolicy.from_prefixes(["198.51.100.0/24"]),
-        geoip=provider,
-    )
-    report = service.discover(
-        "198.51.100.1-2",
-        config=DiscoveryConfig(geo_filter=GeoFilter(*LONDON, max_distance_km=10_000)),
-    )
-    assert [host.ip for host in report.hosts] == ["198.51.100.1", "198.51.100.2"]
-
-
 def test_geolocation_without_a_provider_is_a_clear_error():
     service = DiscoveryService(FakeDiscoveryBackend(up=[]))
     with pytest.raises(TargetError, match="no provider is configured"):
         service.discover("192.168.1.1", config=DiscoveryConfig(geolocate=True))
-
-
-@pytest.mark.parametrize(
-    "geo_filter",
-    [
-        GeoFilter(91.0, 0.0, 10.0),
-        GeoFilter(0.0, 181.0, 10.0),
-        GeoFilter(0.0, 0.0, -5.0),
-    ],
-)
-def test_invalid_geo_filters_are_rejected(geo_filter):
-    with pytest.raises(TargetError):
-        geo_filter.validated()
 
 
 def test_invalid_timeout_is_rejected():

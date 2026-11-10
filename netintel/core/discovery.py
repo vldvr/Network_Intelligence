@@ -5,7 +5,7 @@ shelled out to nmap, geolocated each result one at a time with a 1.5 s sleep
 between calls, and appended strings to a ``QTextEdit`` from a worker thread.
 
 Here the three concerns are separated. The backend finds hosts; this service
-applies policy (scope, limits), enriches results in batch and filters them.
+applies policy (scope, limits) and enriches results in batch.
 Nothing in this module knows a UI exists.
 """
 
@@ -15,7 +15,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 
 from netintel.cancellation import NEVER_CANCELLED, CancellationToken
-from netintel.core.geoip import GeoIPProvider, haversine_km
+from netintel.core.geoip import GeoIPProvider
 from netintel.core.scope import ScopePolicy
 from netintel.core.targets import DEFAULT_MAX_HOSTS, parse_targets
 from netintel.errors import TargetError
@@ -26,46 +26,21 @@ HostCallback = Callable[[HostRecord], None]
 
 
 @dataclass(frozen=True, slots=True)
-class GeoFilter:
-    """Keep only hosts within ``max_distance_km`` of a reference point."""
-
-    latitude: float
-    longitude: float
-    max_distance_km: float
-
-    def validated(self) -> GeoFilter:
-        if not -90.0 <= self.latitude <= 90.0:
-            raise TargetError("latitude must be between -90 and 90")
-        if not -180.0 <= self.longitude <= 180.0:
-            raise TargetError("longitude must be between -180 and 180")
-        if self.max_distance_km <= 0:
-            raise TargetError("maximum distance must be positive")
-        return self
-
-    @property
-    def origin(self) -> tuple[float, float]:
-        return (self.latitude, self.longitude)
-
-
-@dataclass(frozen=True, slots=True)
 class DiscoveryConfig:
     """Tunables for a discovery run."""
 
     timeout_s: float = 1.0
     max_hosts: int = DEFAULT_MAX_HOSTS
     geolocate: bool = False
-    geo_filter: GeoFilter | None = None
 
     def validated(self) -> DiscoveryConfig:
         if not 0.1 <= self.timeout_s <= 30.0:
             raise TargetError("timeout must be between 0.1 and 30 seconds")
-        if self.geo_filter is not None:
-            self.geo_filter.validated()
         return self
 
     @property
     def needs_geoip(self) -> bool:
-        return self.geolocate or self.geo_filter is not None
+        return self.geolocate
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +50,6 @@ class DiscoveryReport:
     expression: str
     requested: int
     hosts: tuple[HostRecord, ...]
-    filtered_out: int = 0
     cancelled: bool = False
     backend: str = "unknown"
 
@@ -84,7 +58,6 @@ class DiscoveryReport:
             "expression": self.expression,
             "requested": self.requested,
             "found": len(self.hosts),
-            "filtered_out": self.filtered_out,
             "cancelled": self.cancelled,
             "backend": self.backend,
             "hosts": [host.to_json() for host in self.hosts],
@@ -137,57 +110,28 @@ class DiscoveryService:
         )
 
         hosts = list(found)
-        filtered_out = 0
         if settings.needs_geoip and hosts:
-            hosts, filtered_out = self._enrich(hosts, settings, token=token)
+            hosts = self._enrich(hosts, token=token)
 
         return DiscoveryReport(
             expression=spec.raw,
             requested=len(spec),
             hosts=tuple(hosts),
-            filtered_out=filtered_out,
             cancelled=token.cancelled,
             backend=getattr(self._backend, "name", "unknown"),
         )
 
-    def _enrich(
-        self,
-        hosts: Sequence[HostRecord],
-        config: DiscoveryConfig,
-        *,
-        token: CancellationToken,
-    ) -> tuple[list[HostRecord], int]:
+    def _enrich(self, hosts: Sequence[HostRecord], *, token: CancellationToken) -> list[HostRecord]:
         assert self._geoip is not None
         located = self._geoip.lookup_many([host.ip for host in hosts], token=token)
-
-        enriched: list[HostRecord] = []
-        dropped = 0
-        for host in hosts:
-            location = located.get(host.ip)
-            distance = None
-            if location is not None and config.geo_filter is not None:
-                distance = haversine_km(config.geo_filter.origin, location.coordinates)
-
-            record = replace(host, location=location, distance_km=distance)
-            # A host with no location cannot be shown to be within the radius,
-            # so it is excluded rather than silently assumed to be near.
-            if config.geo_filter is not None and (
-                distance is None or distance > config.geo_filter.max_distance_km
-            ):
-                dropped += 1
-                continue
-            enriched.append(record)
-
-        enriched.sort(key=lambda h: (h.distance_km is None, h.distance_km or 0.0))
-        return enriched, dropped
+        return [replace(host, location=located.get(host.ip)) for host in hosts]
 
 
 def format_report(report: DiscoveryReport) -> str:
     """Render a discovery report as an aligned text table."""
     lines = [
         f"scanned {report.requested} address(es) from {report.expression!r} via {report.backend}",
-        f"{len(report.hosts)} host(s) responded"
-        + (f", {report.filtered_out} filtered out by distance" if report.filtered_out else ""),
+        f"{len(report.hosts)} host(s) responded",
     ]
     if report.cancelled:
         lines.append("run was cancelled before completion; results are partial")
@@ -202,7 +146,5 @@ def format_report(report: DiscoveryReport) -> str:
             parts.append("ports " + ",".join(str(p) for p in host.open_ports))
         if host.location is not None:
             parts.append(host.location.describe())
-        if host.distance_km is not None:
-            parts.append(f"{host.distance_km:.0f} km")
         lines.append("  ".join(parts).rstrip())
     return "\n".join(lines)

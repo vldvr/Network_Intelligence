@@ -249,20 +249,3 @@ class CachingGeoIPProvider:
 def _chunked(items: Sequence[str], size: int) -> Iterable[Sequence[str]]:
     for start in range(0, len(items), size):
         yield items[start : start + size]
-
-
-def haversine_km(a: tuple[float, float], b: tuple[float, float]) -> float:
-    """Great-circle distance in kilometres between two (lat, lon) pairs.
-
-    Implemented here rather than pulling in geopy: the original dependency
-    existed solely for this one call, and a transitive dependency on a
-    geocoding client is a poor trade for eight lines of trigonometry.
-    """
-    from math import asin, cos, radians, sin, sqrt
-
-    earth_radius_km = 6371.0088
-    lat1, lon1 = radians(a[0]), radians(a[1])
-    lat2, lon2 = radians(b[0]), radians(b[1])
-    dlat, dlon = lat2 - lat1, lon2 - lon1
-    h = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    return 2 * earth_radius_km * asin(sqrt(min(1.0, h)))

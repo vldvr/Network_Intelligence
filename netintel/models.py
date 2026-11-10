@@ -195,7 +195,6 @@ class HostRecord:
     open_ports: tuple[int, ...] = ()
     latency_ms: float | None = None
     location: GeoLocation | None = None
-    distance_km: float | None = None
 
     @property
     def is_private(self) -> bool:

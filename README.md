@@ -1,148 +1,110 @@
-# NetworkIntelligence
+<h1 align="center">NetworkIntelligence</h1>
 
-A network diagnostics toolkit: traceroute with per-hop latency, IP geolocation,
-host discovery and packet capture — as a scriptable CLI and a Qt desktop app
-over one shared engine.
+<p align="center">
+  Инструмент для первичной разведки и аудита сети: одной командой проверяет домен<br>
+  (DNS, SPF/DMARC, TLS-сертификат, заголовки безопасности), сканирует порты, трассирует маршрут и ловит пакеты.
+</p>
+
+![Аудит домена example.com](docs/gui-audit.png)
+
+Есть консольная утилита `netintel` и Qt-приложение, оба работают на одном ядре. Проверки, сканер портов, DNS-клиент и разбор баннеров написаны на стандартной библиотеке Python, без nmap и сторонних сканеров. Для DNS свой парсер протокола: ни dnspython, ни `dig` не используются. Root не нужен ни для чего, кроме трассировки и захвата пакетов.
+
+## Что умеет
+
+**Аудит домена.** `netintel audit example.com` смотрит на домен так, как его видит любой посетитель, и выдаёт список находок с уровнем риска:
+
+- DNS: A/AAAA/NS/MX/CAA, нет ли CAA, один ли NS-сервер;
+- почта: можно ли подделать письмо от имени домена. Проверяется SPF (`+all`/`~all`, лимит в 10 DNS-запросов с учётом вложенных `include`, устаревший `ptr`) и DMARC (`p=none`, `pct`, наличие отчётов `rua`);
+- TLS: срок действия сертификата, совпадение имени (с правильной обработкой wildcard), цепочка, самоподписанность, слабые шифры, принимает ли сервер TLS 1.0/1.1;
+- HTTP-заголовки: HSTS, CSP (ищет `'unsafe-inline'` именно в `script-src`, без учёта стилей), защита от clickjacking, `nosniff`, Referrer-Policy, утечка версий в `Server`/`X-Powered-By`, флаги cookie. В конце выставляется оценка от A до F.
+
+Портов эта команда не касается, поэтому её можно запускать против любого домена.
+
+**Сканер портов.** TCP connect, 200 потоков, захват баннеров. Сервис определяется по ответу, а не по номеру порта: Telnet на 2323 будет опознан как Telnet. Опасные сервисы (Telnet, Redis без пароля, Docker API, Elasticsearch, MongoDB, SMB, RDP) сразу помечаются находками.
+
+![Сканирование портов на демо-сервисах](docs/gui-ports.png)
+
+**Остальное.** Трассировка с задержкой по каждому хопу и геолокацией, геолокация IP через ip-api.com, поиск живых хостов в подсети (через nmap, если он установлен, иначе встроенным TCP-перебором), захват пакетов с фильтрами, которые компилируются в BPF.
+
+У каждой команды есть флаг `--json`, так что вывод можно передавать в `jq` или в отчёт.
+
+## Как запустить
+
+Нужен Python 3.11+.
+
+```bash
+git clone https://github.com/vldvr/Network_Intelligence && cd Network_Intelligence
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[all]"
+```
+
+Консоль:
+
+```bash
+netintel audit example.com              # полный пассивный аудит домена
+netintel mail example.com               # только SPF и DMARC
+netintel tls example.com                # сертификат и протоколы
+netintel headers https://example.com    # заголовки, оценка A–F
+netintel dns example.com MX TXT CAA     # DNS-запросы встроенным клиентом
+netintel ports 192.168.1.10 -p top      # порты: 22,80,8000-8100 | top | all
+netintel discover 192.168.1.0/24        # живые хосты в подсети
+netintel geo 1.1.1.1                    # геолокация IP
+```
+
+Приложение: `netintel-gui` (или `python main.py`).
+
+Пример на настоящем домене с намеренно просроченным сертификатом:
 
 ```console
-$ netintel trace example.com
-traceroute to example.com, max 30 hops
- 1  _gateway (192.168.1.1)  1.42 ms  1.38 ms  1.51 ms
- 2  10.64.0.1  8.90 ms  9.12 ms  8.77 ms
- 3  * * *
- 4  ae-11.edge2.London.example.net (203.0.113.9)  12.04 ms  11.88 ms  24.31 ms  (33% loss)
- 5  93.184.216.34  12.51 ms  12.44 ms  12.60 ms
-destination reached in 5 hops
-
-$ netintel --json geo 1.1.1.1 | jq -r '.[].location.country'
-Australia
-
-$ netintel discover 192.168.1.0/24 --backend tcp
+$ netintel tls expired.badssl.com
+expired.badssl.com:443  SAN: *.badssl.com, badssl.com
+  [info] TLSv1.2, ECDHE-RSA-AES128-GCM-SHA256 (128 bit)
+  [info] issued to *.badssl.com by COMODO CA Limited
+  [HIGH] certificate has expired — 2015-04-12
+  [HIGH] certificate chain does not verify — certificate has expired
 ```
 
-## Why it is built this way
+Трассировке и захвату пакетов нужны raw-сокеты. В Linux достаточно один раз выдать capability интерпретатору (`sudo setcap cap_net_raw,cap_net_admin+eip "$(readlink -f "$(which python3)")"`), на macOS — поставить ChmodBPF из установщика Wireshark. Всё остальное работает от обычного пользователя.
 
-The domain logic does not know that a GUI exists, and it does not know which
-library puts packets on the wire. It depends on the protocols in
-[`netintel/ports.py`](netintel/ports.py); the concrete scapy, nmap and HTTP
-implementations live in [`netintel/adapters/`](netintel/adapters/) and are
-selected in one composition root.
+### Разрешённая зона
 
-That buys three concrete things:
+Активное сканирование (`ports`, `discover`) по умолчанию разрешено только в частных сетях: 10/8, 172.16/12, 192.168/16, loopback. Чтобы сканировать что-то ещё, область нужно указать явно: флагом `--authorized-scope 203.0.113.0/24` или файлом `netintel-scope.json` (шаблон лежит в [`netintel-scope.json.example`](netintel-scope.json.example)), где заодно записано основание. Проверка срабатывает до отправки первого пакета. Сканировать чужие сети без разрешения нельзя.
 
-- **The test suite runs anywhere.** 233 tests, about two seconds, no root, no
-  network, no nmap, no PyQt5 — every backend is replaced by an in-memory fake
-  at the port boundary. CI installs the package with *no* optional
-  dependencies and the suite still passes.
-- **The CLI and the GUI cannot drift.** Both call the same services and render
-  the same result models. A fix to traceroute logic reaches both.
-- **The tool degrades instead of failing.** No nmap installed? Discovery falls
-  back to a built-in TCP connect sweep that needs neither root nor an external
-  binary. No PyQt5? The CLI is unaffected.
+## Как устроено
 
-Layering is enforced by [`tests/test_layering.py`](tests/test_layering.py)
-rather than by convention: it fails the build if `core` imports Qt or a
-backend library, if anything below the UI imports the UI, or if an adapter
-imports its heavy dependency at module scope.
+```
+              cli/  ─┐
+                     ├──▶  core/   (логика, без сети и без Qt)  ──▶  ports.py (интерфейсы)
+               ui/  ─┘                                                    ▲
+                                                                          │
+                                       adapters/  (сокеты, ssl, scapy, nmap, HTTP)
+```
 
-For the design in detail, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+| Модуль | Что внутри |
+|---|---|
+| `core/dnswire.py` | кодирование запросов и разбор ответов DNS по RFC 1035, сжатие имён с защитой от зацикливания |
+| `core/mailsec.py` | разбор SPF и DMARC, подсчёт DNS-запросов SPF |
+| `core/tlsaudit.py` | правила оценки TLS: сроки, имя, протоколы, шифры |
+| `core/headers.py` | аудит заголовков, разбор CSP, оценка |
+| `core/portscan.py` | разбор списков портов, распознавание баннеров, рискованные сервисы |
+| `core/audit.py` | сборка всех проверок в один отчёт |
+| `core/traceroute.py`, `discovery.py`, `capture.py`, `geoip.py` | трассировка, поиск хостов, захват, геолокация |
+| `core/scope.py` | разрешённая зона сканирования |
+| `adapters/netprobes.py` | UDP/TCP DNS-клиент, TLS-рукопожатие, HTTP-запрос, сканер портов |
+| `cli/`, `ui/` | консоль и Qt-интерфейс |
 
-## Install
+В `core` нет ни сетевого кода, ни Qt: на вход приходят наблюдения (ответ DNS, параметры TLS-сессии, заголовки, баннеры), на выходе получается список находок. Поэтому все правила проверяются тестами без сети. Тест `tests/test_layering.py` ломает сборку, если `core` начнёт импортировать Qt, scapy, nmap или requests.
+
+DNS-клиент сначала отправляет запрос по UDP. Если ответ обрезан или UDP заблокирован, он переходит на TCP (RFC 7766) и дальше работает только по TCP. Ответ с чужим ID отбрасывается.
+
+## Разработка
 
 ```bash
-pip install -e .            # core only — no dependencies at all
-pip install -e ".[all]"     # everything: geolocation, capture, nmap, GUI
+pip install -e ".[dev,all]"
+pytest              # 300+ тестов, пара секунд, без интернета и root
+ruff check .
 ```
 
-Extras are separate so you install what you will use: `geo` (requests),
-`capture` (scapy), `nmap` (python-nmap plus the nmap binary), `gui` (PyQt5).
+## Лицензия
 
-Traceroute and packet capture need raw sockets. Rather than telling everyone to
-run the whole application as root:
-
-```bash
-# Linux — grant the capability once
-sudo setcap cap_net_raw,cap_net_admin+eip "$(readlink -f "$(which python3)")"
-
-# macOS — the Wireshark installer's ChmodBPF helper does the equivalent
-```
-
-The GUI shows the current privilege state in its status bar, so this is visible
-before you press a button rather than after a failure.
-
-## Usage
-
-```bash
-netintel trace example.com --probes 5 --geo
-netintel geo 1.1.1.1 8.8.8.8 --near 51.5074,-0.1278
-netintel discover 192.168.1.0/24 --geo
-netintel capture -i eth0 --protocol tcp --dst-port 443 -c 100
-netintel scope                       # what am I authorised to scan?
-netintel <command> --json            # machine-readable output, for any command
-netintel-gui                         # the desktop app
-```
-
-`--print-filter` shows the BPF expression a capture filter compiles to without
-capturing anything.
-
-## Authorised scope
-
-Active scanning is confined to private address space by default. Pointing it at
-anything else takes a deliberate act:
-
-```bash
-netintel discover 203.0.113.0/24 --authorized-scope 203.0.113.0/24
-```
-
-or a `netintel-scope.json` in the working directory (see
-[`netintel-scope.json.example`](netintel-scope.json.example)), which also
-records *why* the scope exists:
-
-```json
-{
-  "note": "engagement ACME-2026-03, authorised by ACME IT until 2026-04-01",
-  "authorized_prefixes": ["203.0.113.0/24"],
-  "max_hosts": 1024
-}
-```
-
-The check runs before a single packet is sent, and a range expanding past the
-host limit is refused outright. Unauthorised port scanning is a criminal
-offence in many jurisdictions; the default being the safe one is not a
-formality.
-
-Note that "private" here means an explicit prefix list, not Python's
-`ipaddress.is_private` — that predicate also covers carrier-grade NAT
-(100.64.0.0/10), which reaches other people's devices.
-
-Packet capture records headers only. Payloads are never decoded, displayed or
-stored.
-
-## Development
-
-```bash
-pip install -e ".[dev]"
-pytest --cov          # 233 tests, ~2s, 89% coverage
-ruff check netintel tests && ruff format --check netintel tests
-mypy                  # strict
-```
-
-CI runs the suite on Linux, macOS and Windows against Python 3.11 and 3.12,
-plus lint, strict type checking, and a smoke job that installs the package with
-no extras and asserts that scanning outside the authorised scope fails closed.
-
-## Layout
-
-```
-netintel/
-  models.py        frozen result types shared by every layer
-  ports.py         the protocols core depends on
-  core/            traceroute, geoip, discovery, capture, scope, targets
-  adapters/        scapy, nmap, requests, TCP-connect, system DNS
-  cli/             argparse front end, text or JSON
-  ui/              PyQt5 front end (presentation only)
-```
-
-## Licence
-
-MIT.
+MIT
