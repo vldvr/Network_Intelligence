@@ -53,13 +53,11 @@ class RequestsHttpClient:
     def _request(self, method: str, url: str, *, timeout: float, **kwargs: Any) -> Any:
         import time
 
-        import requests
-
         last_error: Exception | None = None
         for attempt in range(self._retries + 1):
             try:
                 response = self._session.request(method, url, timeout=timeout, **kwargs)
-            except requests.RequestException as exc:
+            except _transport_errors() as exc:
                 last_error = exc
             else:
                 if response.status_code == 429 or response.status_code >= 500:
@@ -76,3 +74,16 @@ class RequestsHttpClient:
                 time.sleep(self._backoff * (2**attempt))
 
         raise GeoIPError(f"request to {url} failed: {last_error}")
+
+
+def _transport_errors() -> tuple[type[Exception], ...]:
+    """Exceptions that mean "the request did not get through".
+
+    Resolved lazily so an injected session (tests, alternative transports)
+    works without ``requests`` installed.
+    """
+    try:
+        import requests
+    except ImportError:
+        return (OSError,)
+    return (requests.RequestException, OSError)

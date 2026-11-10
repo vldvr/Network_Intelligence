@@ -205,26 +205,37 @@ def _unverified(host: str, port: int, timeout: float) -> tuple[Any, Any, str | N
 
 
 def _is_local_host(host: str) -> bool:
+    """True if ``host`` resolves to any non-public address.
+
+    Resolution failure counts as local: an address we cannot vet is refused,
+    not assumed safe.
+    """
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        return False
+        return True
     return any(not is_public(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
-def _check_redirect(current: str, target: str) -> None:
+def _check_redirect(origin_is_local: bool, current: str, target: str) -> None:
     """Refuse redirects that turn a check of a public site into something else.
 
-    A server under audit chooses where we go next; it must not be able to
+    The server under audit chooses where we go next; it must not be able to
     point the tool at another scheme, downgrade it to plain HTTP, or bounce it
     into the auditor's own network (router admin pages, metadata services).
+    Whether local targets are acceptable is decided once, from the URL the
+    user typed — never from an intermediate hop.
+
+    Residual risk: the name is resolved again when connecting, so a DNS
+    rebinding race is not closed. Acceptable for a tool that only reads
+    response headers; pinning the vetted IP would close it.
     """
     src, dst = urlsplit(current), urlsplit(target)
     if dst.scheme not in ("http", "https"):
         raise TargetError(f"refusing redirect to non-HTTP URL {target!r}")
     if src.scheme == "https" and dst.scheme == "http":
         raise TargetError(f"refusing redirect from HTTPS down to HTTP: {target!r}")
-    if not _is_local_host(src.hostname or "") and _is_local_host(dst.hostname or ""):
+    if not origin_is_local and _is_local_host(dst.hostname or ""):
         raise TargetError(
             f"refusing redirect from a public host into local address space: {target!r}"
         )
@@ -233,6 +244,7 @@ def _check_redirect(current: str, target: str) -> None:
 def fetch_headers(url: str, *, timeout: float = 8.0, max_redirects: int = 5) -> HttpObservation:
     if "://" not in url:
         url = "https://" + url
+    origin_is_local = _is_local_host(urlsplit(url).hostname or "")
     for _ in range(max_redirects + 1):
         parts = urlsplit(url)
         conn_cls = (
@@ -255,7 +267,7 @@ def fetch_headers(url: str, *, timeout: float = 8.0, max_redirects: int = 5) -> 
         location = resp.getheader("Location")
         if resp.status in (301, 302, 303, 307, 308) and location:
             next_url = urljoin(url, location)
-            _check_redirect(url, next_url)
+            _check_redirect(origin_is_local, url, next_url)
             url = next_url
             continue
         return HttpObservation.from_mapping(url, resp.status, headers)

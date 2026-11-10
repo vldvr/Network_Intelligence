@@ -205,8 +205,27 @@ def test_dangerous_redirects_are_refused(current, target, monkeypatch):
 
     monkeypatch.setattr(netprobes, "_is_local_host", lambda host: host == "127.0.0.1")
     with pytest.raises(TargetError):
-        netprobes._check_redirect(current, target)
+        netprobes._check_redirect(False, current, target)
 
 
 def test_local_to_local_redirects_are_allowed(http_server):
     assert fetch_headers(f"{http_server}/old").status == 200
+
+
+def test_public_audit_cannot_reach_local_space_via_an_intermediate_hop(monkeypatch):
+    from netintel.adapters import netprobes
+
+    monkeypatch.setattr(netprobes, "_is_local_host", lambda host: host != "example.com")
+    # Hop 2 starts at a "local" host, but the audit began public: still refused.
+    with pytest.raises(TargetError):
+        netprobes._check_redirect(False, "https://hop.internal/", "https://10.0.0.1/")
+
+
+def test_unresolvable_redirect_target_is_refused(monkeypatch):
+    from netintel.adapters import netprobes
+
+    def fail(*args, **kwargs):
+        raise OSError("no such host")
+
+    monkeypatch.setattr(socket, "getaddrinfo", fail)
+    assert netprobes._is_local_host("nowhere.invalid")

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "netintel"
-version = "1.0.0"
+version = "1.1.0"
 description = "Network recon and external audit: DNS, SPF/DMARC, TLS, HTTP headers, port scan, traceroute and capture, with a CLI and a Qt front end."
 readme = "README.md"
 requires-python = ">=3.11"

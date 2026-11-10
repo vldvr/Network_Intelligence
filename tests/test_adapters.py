@@ -463,11 +463,13 @@ def test_offline_factory_returns_the_null_provider():
 
 def test_geoip_provider_is_shared_across_callers():
     """A shared cache means a trace and a scan draw on one quota, not two."""
+    pytest.importorskip("requests")
     first = factory.build_geoip_provider()
     assert factory.build_geoip_provider() is first
 
 
 def test_unshared_provider_is_distinct():
+    pytest.importorskip("requests")
     assert factory.build_geoip_provider(shared=False) is not factory.build_geoip_provider(
         shared=False
     )
