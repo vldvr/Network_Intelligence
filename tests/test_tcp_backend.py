@@ -51,7 +51,9 @@ def test_a_refused_connection_still_proves_the_host_is_up():
     """A RST answers the liveness question even with nothing listening."""
     closed = _unused_port()
     backend = TcpConnectBackend(ports=[closed])
-    hosts = backend.discover(["127.0.0.1"], timeout=1.0, should_continue=lambda: True)
+    # Windows retries a refused SYN for ~2 s before reporting ECONNREFUSED,
+    # even on loopback, so the timeout must outlast that.
+    hosts = backend.discover(["127.0.0.1"], timeout=5.0, should_continue=lambda: True)
 
     assert [host.ip for host in hosts] == ["127.0.0.1"]
     assert hosts[0].open_ports == ()

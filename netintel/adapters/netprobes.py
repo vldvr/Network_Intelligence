@@ -204,16 +204,17 @@ def _unverified(host: str, port: int, timeout: float) -> tuple[Any, Any, str | N
 # --------------------------------------------------------------------- HTTP
 
 
-def _is_local_host(host: str) -> bool:
+def _is_local_host(host: str, *, unresolvable: bool = True) -> bool:
     """True if ``host`` resolves to any non-public address.
 
-    Resolution failure counts as local: an address we cannot vet is refused,
-    not assumed safe.
+    ``unresolvable`` is the answer when resolution fails. Both callers fail
+    closed: a redirect target we cannot vet counts as local (refused), while
+    an origin we cannot vet counts as public (local targets stay refused).
     """
     try:
         infos = socket.getaddrinfo(host, None)
     except OSError:
-        return True
+        return unresolvable
     return any(not is_public(ipaddress.ip_address(info[4][0])) for info in infos)
 
 
@@ -244,7 +245,7 @@ def _check_redirect(origin_is_local: bool, current: str, target: str) -> None:
 def fetch_headers(url: str, *, timeout: float = 8.0, max_redirects: int = 5) -> HttpObservation:
     if "://" not in url:
         url = "https://" + url
-    origin_is_local = _is_local_host(urlsplit(url).hostname or "")
+    origin_is_local = _is_local_host(urlsplit(url).hostname or "", unresolvable=False)
     for _ in range(max_redirects + 1):
         parts = urlsplit(url)
         conn_cls = (

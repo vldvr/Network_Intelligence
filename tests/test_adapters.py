@@ -9,6 +9,7 @@ the adapters were written to have.
 
 from __future__ import annotations
 
+import os
 import socket
 
 import pytest
@@ -143,6 +144,7 @@ def test_null_resolver_refuses_forward_lookups():
 # ---------------------------------------------------------------- privileges
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX privilege path; Windows checks admin rights")
 def test_root_is_reported_as_privileged(monkeypatch):
     monkeypatch.setattr("os.geteuid", lambda: 0)
     status = check_raw_socket_privileges()
@@ -150,6 +152,7 @@ def test_root_is_reported_as_privileged(monkeypatch):
     assert status.hint == ""
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX privilege path; Windows checks admin rights")
 def test_missing_privileges_come_with_an_actionable_hint(monkeypatch):
     monkeypatch.setattr("os.geteuid", lambda: 1000)
 

@@ -228,4 +228,5 @@ def test_unresolvable_redirect_target_is_refused(monkeypatch):
         raise OSError("no such host")
 
     monkeypatch.setattr(socket, "getaddrinfo", fail)
-    assert netprobes._is_local_host("nowhere.invalid")
+    assert netprobes._is_local_host("nowhere.invalid")  # as a redirect target: refused
+    assert not netprobes._is_local_host("nowhere.invalid", unresolvable=False)  # as origin: public
